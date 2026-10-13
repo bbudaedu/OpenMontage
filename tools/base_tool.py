@@ -310,8 +310,10 @@ def _result_from_cache(restored: dict[str, Any], dest: Any) -> "ToolResult":
     """Build a ToolResult for a cache hit that was materialized to ``dest``."""
     data = dict(restored.get("data") or {})
     # Repoint the stored output reference to where the caller asked for it.
-    if "output" in data:
-        data["output"] = str(dest)
+    # Tools report it as either "output" or "output_path" (video_compose).
+    for key in ("output", "output_path"):
+        if key in data:
+            data[key] = str(dest)
     data["cached"] = True
     return ToolResult(
         success=True,

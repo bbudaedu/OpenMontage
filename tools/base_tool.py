@@ -244,6 +244,12 @@ def _instrument_execute(fn: Callable) -> Callable:
 
 _FILE_HASH_CHUNK = 1024 * 1024
 
+# Inputs that steer how a call runs, not what it produces: the set
+# schema_media and fal_media already leave out of their idempotency keys.
+_RUN_CONTROL_INPUTS = frozenset(
+    {"output_path", "resume_job", "job_path", "poll_timeout", "poll_interval"}
+)
+
 
 def _hash_file(path: Path) -> Optional[str]:
     """SHA-256 of a file's bytes, read in chunks. None if it can't be read."""
@@ -562,23 +568,32 @@ class BaseTool(ABC):
     def cache_key(self, inputs: dict[str, Any]) -> str:
         """Content-addressed key for this call, used by the asset cache.
 
-        Combines tool identity and version with the declared
-        ``idempotency_key_fields`` so identical inputs to the same tool version
-        resolve to the same key, while a version bump or a different tool never
-        collides. Returns the full SHA-256 hex; the cache stores blobs under it.
+        Combines tool identity and version with every input except the
+        run-control ones in ``_RUN_CONTROL_INPUTS``, so identical inputs to the
+        same tool version resolve to the same key, while a version bump or a
+        different tool never collides. Returns the full SHA-256 hex; the cache
+        stores blobs under it.
+
+        The key is not limited to ``idempotency_key_fields``: those lists
+        predate the cache and omit output-affecting inputs (``subtitle_gen``
+        omits ``corrections``). A missing field serves a stale file; an extra
+        one only costs a miss. A run-control input the tool does list stays in
+        the key (``threejs_asset_catalog``'s ``output_path`` is a directory
+        that is part of its result).
 
         File-valued fields are fingerprinted by content, not by path string, so
         rewriting an input file at the same path changes the key rather than
-        serving output derived from the old bytes. Output-path fields are not in
-        this set, so the same content is a hit regardless of where the caller
+        serving output derived from the old bytes. ``output_path`` is otherwise
+        left out, so the same content is a hit regardless of where the caller
         wants the file to land.
         """
         key_data = {
             "tool": self.name,
             "version": self.version,
             "fields": {
-                k: _fingerprint_value(inputs.get(k))
-                for k in self.idempotency_key_fields
+                k: _fingerprint_value(v)
+                for k, v in inputs.items()
+                if k not in _RUN_CONTROL_INPUTS or k in self.idempotency_key_fields
             },
         }
         raw = json.dumps(key_data, sort_keys=True, default=str)

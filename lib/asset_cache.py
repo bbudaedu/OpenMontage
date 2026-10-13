@@ -1,8 +1,8 @@
 """Content-addressed cache for reproducible tool outputs.
 
 Every paid generation tool (FLUX, Imagen, ElevenLabs, Kling, ...) already
-declares the two things needed to know when a call is a repeat: its
-``idempotency_key_fields`` (the inputs that determine the output) and its
+declares the two things needed to know when a call may be a repeat: its
+``idempotency_key_fields`` (a non-empty list marks it reusable) and its
 ``determinism`` class. Nothing consumed them, so re-running a pipeline with
 the same brief paid the same provider for the same bytes again. This cache
 closes that gap: when a deterministic (or seed-pinned) tool is about to
@@ -10,8 +10,9 @@ produce an artifact it has produced before, the bytes are copied back from
 disk and the API call is skipped.
 
 Keyed by *content*, not by output path. The cache key is derived by the tool
-(``BaseTool.cache_key``) from tool identity + version + the declared
-idempotency fields, so the same prompt/seed/model resolves to the same entry
+(``BaseTool.cache_key``) from tool identity + version + every input except
+run-control ones such as ``output_path``, so the same prompt/seed/model
+resolves to the same entry
 no matter where the caller asks the file to land. That is also why an edit
 recomputes only what changed: touch one scene's prompt and only that scene's
 key moves, so every other asset is a hit. There is no dependency graph and no

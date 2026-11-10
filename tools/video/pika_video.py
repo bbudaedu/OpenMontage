@@ -499,6 +499,9 @@ class PikaVideo(BaseTool):
                     duration_seconds=round(time.time() - started, 2),
                     model=MODEL,
                 )
+            except PikaAPIError:
+                # A status request failed (429, 5xx); the job itself may still be running.
+                raise
             except RuntimeError as exc:
                 # poll() raised on a terminal failed status; re-read for the structured error.
                 final = fetch()
@@ -554,6 +557,9 @@ class PikaVideo(BaseTool):
             )
         except PikaAPIError as exc:
             hint = _CODE_HINTS.get(exc.code or "", "")
+            if job.get("id") and exc.code in _RETRYABLE_CODES:
+                # Already submitted: "submit again" would pay for a second job.
+                hint = f"Job {job['id']} was submitted; pass data.resume_job back to keep waiting, do not resubmit."
             message = f"Pika API error ({exc.code or exc.status}): {exc}. {hint}".strip()
             if exc.retry_after:
                 message += f" Retry-After: {exc.retry_after}."

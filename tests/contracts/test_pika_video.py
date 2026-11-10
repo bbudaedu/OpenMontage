@@ -581,6 +581,44 @@ class TestErrors:
         assert result.success is False and result.data["error_code"] == "invalid_input"
         assert fake_http.by("GET", "/v1/media/jobs/") == []
 
+    def test_api_error_while_polling_is_not_reported_as_a_failed_job(self, pika_env, fake_http):
+        # A 429 on one status poll says nothing about the job, which keeps running
+        # and is billed when it completes. Report the API error, keep resume_job.
+        fake_http.add("POST", f"/v1/media/pika/{MODEL}/", FakeResponse(200, {"id": JOB_ID, "status": "queued"}))
+        fake_http.add("GET", f"/v1/media/jobs/{JOB_ID}",
+                      FakeResponse(429, {"error": {"code": "rate_limited", "message": "slow down"}},
+                                   headers={"Retry-After": "30"}),
+                      job("running"))
+        result = PikaVideo().execute({"prompt": "x"})
+        assert result.success is False
+        assert "failed (" not in result.error
+        assert "resume_job" in result.error and "submit again" not in result.error
+        assert result.data["error_code"] == "rate_limited"
+        assert result.data["retryable"] is True and result.data["retry_after"] == "30"
+        assert result.data["resume_job"]["id"] == JOB_ID
+        assert len(fake_http.by("POST", "/v1/media/pika/")) == 1
+
+    def test_non_retryable_poll_error_does_not_say_keep_waiting(self, pika_env, fake_http):
+        fake_http.add("POST", f"/v1/media/pika/{MODEL}/", FakeResponse(200, {"id": JOB_ID, "status": "queued"}))
+        fake_http.add("GET", f"/v1/media/jobs/{JOB_ID}", FakeResponse(401, {"message": "Unauthorized"}), job("running"))
+        result = PikaVideo().execute({"prompt": "x"})
+        assert result.success is False and "Unauthorized" in result.error
+        assert "failed (" not in result.error and "keep waiting" not in result.error
+        assert result.data["retryable"] is False and result.data["resume_job"]["id"] == JOB_ID
+
+    def test_poll_api_error_then_resume_completes_the_same_job(self, pika_env, fake_http, tmp_path):
+        fake_http.add("POST", f"/v1/media/pika/{MODEL}/", FakeResponse(200, {"id": JOB_ID, "status": "queued"}))
+        fake_http.add("GET", f"/v1/media/jobs/{JOB_ID}",
+                      FakeResponse(503, {"error": {"code": "provider_unavailable", "message": "busy"}}),
+                      job("running"), job("completed"))
+        fake_http.add("GET", VIDEO_URL, FakeResponse(200, content=b"\x00\x00\x00\x18ftypmp42"))
+        first = PikaVideo().execute({"prompt": "x"})
+        assert first.success is False and first.data["retryable"] is True
+        resumed = PikaVideo().execute({"resume_job": first.data["resume_job"],
+                                       "output_path": str(tmp_path / "o.mp4")})
+        assert resumed.success and resumed.data["job_id"] == JOB_ID
+        assert len(fake_http.by("POST", "/v1/media/pika/")) == 1
+
 
 class TestAssetCache:
     @pytest.fixture(autouse=True)
